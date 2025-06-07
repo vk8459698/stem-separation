@@ -1,5 +1,5 @@
 ```bash
-chmod +x setup.hs
+chmod +x setup.sh
 ```
 ```bash
 ./setup.sh
