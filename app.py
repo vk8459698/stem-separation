@@ -2,9 +2,9 @@ import os
 import logging
 import subprocess
 import sys
-from datetime import datetime
 import requests
 from urllib.parse import urlparse
+import shutil
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -40,99 +40,99 @@ def download_audio(url_or_path):
             logger.error(f"Local file not found: {url_or_path}")
             return None
 
-def stem_separation(audio_file):
+def vocals_instrumentals_separation(audio_file):
     """
-    Separate audio into stems using Demucs
-    Returns list of stem file paths
+    Separate audio into vocals and instrumentals using Demucs
+    Returns dict with vocals and instrumentals file paths
     """
-    logger.info(f"Starting stem separation for: {audio_file}")
+    logger.info(f"Starting vocals/instrumentals separation for: {audio_file}")
     
-    # Create output directory
-    stem_outputs_dir = "stem_outputs"
-    if not os.path.exists(stem_outputs_dir):
-        logger.info(f"Creating directory: {stem_outputs_dir}")
-        os.makedirs(stem_outputs_dir)
+    # Create temp output directory
+    temp_output = "temp_separation"
+    if not os.path.exists(temp_output):
+        os.makedirs(temp_output)
     
-    # Build demucs command
+    # Use demucs with --two-stems=vocals
     demucs_command = [
         "demucs",
-        "-o", stem_outputs_dir,
-        "-n", "htdemucs_6s",
+        "-o", temp_output,
+        "-n", "htdemucs",
+        "--two-stems=vocals",
         "--mp3",
         audio_file
     ]
     
-    logger.info(f"Running command: {' '.join(demucs_command)}")
+    logger.info(f"Running demucs: {' '.join(demucs_command)}")
     
     try:
         result = subprocess.run(demucs_command, capture_output=True, text=True)
         
-        if result.returncode == 0:
-            logger.info("Demucs completed successfully")
-            logger.info(result.stdout)
-        else:
+        if result.returncode != 0:
             logger.error(f"Demucs failed: {result.stderr}")
-            return []
+            return {}
+        
+        logger.info("Demucs completed successfully")
         
         # Find the output files
         filename_base = os.path.splitext(os.path.basename(audio_file))[0]
-        output_dir = os.path.join(stem_outputs_dir, "htdemucs_6s", filename_base)
+        output_dir = os.path.join(temp_output, "htdemucs", filename_base)
         
         if not os.path.exists(output_dir):
             logger.error(f"Output directory not found: {output_dir}")
-            return []
+            return {}
         
-        # Get all stem files
-        stem_files = []
+        # Find vocals and no_vocals files
+        vocals_source = None
+        instrumentals_source = None
+        
         for file in os.listdir(output_dir):
             if file.endswith(('.wav', '.mp3')):
-                full_path = os.path.join(output_dir, file)
-                # Rename with timestamp
-                new_path = rename_stem_file(full_path)
-                stem_files.append(new_path)
+                if 'vocals' in file and 'no_vocals' not in file:
+                    vocals_source = os.path.join(output_dir, file)
+                elif 'no_vocals' in file:
+                    instrumentals_source = os.path.join(output_dir, file)
         
-        logger.info(f"Generated {len(stem_files)} stem files")
-        return stem_files
+        if not vocals_source or not instrumentals_source:
+            logger.error("Could not find both vocals and instrumentals files")
+            return {}
+        
+        # Copy to simple names in current directory
+        vocals_final = "only_vocals.mp3"
+        instrumentals_final = "only_instrumentals.mp3"
+        
+        shutil.copy2(vocals_source, vocals_final)
+        shutil.copy2(instrumentals_source, instrumentals_final)
+        
+        # Clean up temp directory
+        shutil.rmtree(temp_output)
+        
+        logger.info("Files created: only_vocals.mp3 and only_instrumentals.mp3")
+        
+        return {
+            'vocals': vocals_final,
+            'instrumentals': instrumentals_final
+        }
         
     except Exception as e:
-        logger.error(f"Error during stem separation: {e}")
-        return []
+        logger.error(f"Error during separation: {e}")
+        return {}
 
-def rename_stem_file(filepath):
-    """Rename stem file with timestamp"""
-    now = datetime.now()
-    timestamp = now.strftime("%Y%m%d%H%M%S")
-    
-    directory = os.path.dirname(filepath)
-    filename = os.path.basename(filepath)
-    name, ext = os.path.splitext(filename)
-    
-    new_filename = f"{name}_{timestamp}{ext}"
-    new_filepath = os.path.join(directory, new_filename)
-    
-    try:
-        os.rename(filepath, new_filepath)
-        logger.info(f"Renamed: {filename} -> {new_filename}")
-        return new_filepath
-    except Exception as e:
-        logger.error(f"Error renaming file: {e}")
-        return filepath
-
-def print_results(stem_files):
-    """Print results in a nice format"""
-    if not stem_files:
-        print(" No stems were generated")
+def print_results(result):
+    """Print results"""
+    if not result:
+        print("No files were generated")
         return
     
-    print(f"\n Stem separation complete! Generated {len(stem_files)} files:")
-    print("-" * 60)
+    print(f"\nSeparation complete! Generated 2 files:")
+    print("-" * 40)
     
-    for i, stem_file in enumerate(stem_files, 1):
-        filename = os.path.basename(stem_file)
-        size_mb = os.path.getsize(stem_file) / (1024 * 1024)
-        print(f"{i:2d}. {filename} ({size_mb:.2f} MB)")
+    if 'vocals' in result:
+        vocals_size = os.path.getsize(result['vocals']) / (1024 * 1024)
+        print(f"1. only_vocals.mp3 ({vocals_size:.2f} MB)")
     
-    print(f"\n All files saved in: {os.path.dirname(stem_files[0])}")
+    if 'instrumentals' in result:
+        instrumentals_size = os.path.getsize(result['instrumentals']) / (1024 * 1024)
+        print(f"2. only_instrumentals.mp3 ({instrumentals_size:.2f} MB)")
 
 def main():
     """Main function"""
@@ -145,20 +145,20 @@ def main():
     
     audio_input = sys.argv[1]
     
-    print(" Stem Separation Tool")
+    print("Vocals & Instrumentals Separator")
     print("=" * 40)
     
     # Download or verify file
     audio_file = download_audio(audio_input)
     if not audio_file:
-        print(" Failed to get audio file")
+        print("Failed to get audio file")
         sys.exit(1)
     
-    # Perform stem separation
-    stem_files = stem_separation(audio_file)
+    # Perform separation
+    result = vocals_instrumentals_separation(audio_file)
     
     # Print results
-    print_results(stem_files)
+    print_results(result)
     
     # Clean up downloaded file if it was a URL
     if audio_input.startswith(('http://', 'https://')) and os.path.exists(audio_file):
